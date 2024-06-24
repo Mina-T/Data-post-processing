@@ -5,6 +5,10 @@ import numpy as np
 import time
 import pickle
 import json
+from ase.io import Trajectory as T
+import numpy as np
+
+
 
 ptable = ['null', 'H', 'He', 'Li', 'Be', 'B', 'C', 'N', 'O', 'F', 'Ne', 'Na', 'Mg', 'Al', 'Si', 'P', 'S', 'Cl', 'Ar', 'K', 'Ca', 'Sc', 'Ti', 'V', 'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn', 'Ga', 'Ge', 'As', 'Se', 'Br', 'Kr', 'Rb', 'Sr', 'Y', 'Zr', 'Nb', 'Mo', 'Tc', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd', 'In', 'Sn', 'Sb', 'Te', 'I', 'Xe', 'Cs', 'Ba', 'La', 'Ce', 'Pr', 'Nd', 'Pm', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy', 'Ho', 'Er', 'Tm', 'Yb', 'Lu', 'Hf', 'Ta', 'W', 'Re', 'Os', 'Ir', 'Pt', 'Au', 'Hg', 'Tl', 'Pb', 'Bi', 'Po', 'At', 'Rn', 'Fr', 'Ra', 'Ac', 'Th', 'Pa', 'U', 'Np', 'Pu', 'Am', 'Cm', 'Bk', 'Cf', 'Es', 'Fm', 'Md', 'No', 'Lr', 'Rf', 'Db', 'Sg', 'Bh', 'Hs', 'Mt', 'Ds', 'Rg', 'Cn', 'Uut', 'Uuq', 'Uup', 'Uuh', 'Uus', 'Uuo']
 
@@ -122,7 +126,12 @@ def jmol_xyz_to_npy(path, name):
     '''
     converts jmol xyz files of QM9 dataset to npy files readable by LATTE
     '''
-    rm_list = np.load('/leonardo_scratch/large/userexternal/mtaleblo/Dataset/QM9/training_data/filtered/rm_list.npy', allow_pickle = True)
+    atomic_ref = {1 : -0.500273,
+                  6 : -37.846772,
+                  7 : -54.583861,
+                  8 :-75.064579,
+                  9 : -99.718730}
+    rm_list = np.load('/leonardo_scratch/large/userexternal/mtaleblo/Dataset/QM9/training_data/rm.npy', allow_pickle = True)
     print(rm_list[:3], flush = True)
     print(name, flush = True)
     os.chdir(path)
@@ -139,14 +148,15 @@ def jmol_xyz_to_npy(path, name):
             f = open(_file, 'r')
             r = f.readlines()
             natoms = int(r[0].replace('\n', ''))
-            properties = r[1].split('\t')
+# axs[0].set_yscale('log')            properties = r[1].split('\t')
             properties.pop()
             properties[0:1] = properties[0].split(' ')
-            Internal_energy_0K = float(properties[12]) * Hartree_to_eV
+            Internal_energy_0K = float(properties[12])
             idx = properties[1]
             forces = np.zeros((natoms, 3))
             Id = properties[0]
             atomic_numbers = []
+            atomization_energy = Internal_energy_0K - (sum([atomic_ref[n] for n in atomic_numbers]))
             symbol = ''
             atomic_positions = []
             for i in range(2, natoms+2):
@@ -155,9 +165,9 @@ def jmol_xyz_to_npy(path, name):
                 cell = np.array([[5.0, 0.0, 0.0],[0.0, 5.0, 0.0],[0.0, 0.0, 5.0]])
                 symbol += line[0]
                 atomic_positions.append([float(n.replace(' ','').replace('*^','e')) for n in line[1:4]])
-                lst = [idx, natoms, np.array(atomic_numbers), cell, symbol, np.array(atomic_positions), Internal_energy_0K, forces, Id]
+                lst = [idx, natoms, np.array(atomic_numbers), cell, symbol, np.array(atomic_positions), atomization_energy * Hartree_to_eV , forces, Id]
             dataset = np.vstack((dataset, np.array(lst, dtype=object)))
-    write = open(f'{name}.npy', 'wb')
+    write = open(f'{name}_AE.npy', 'wb')
     np.save(write, dataset)
     print('Done', flush = True)
 
@@ -188,7 +198,7 @@ def wbm_to_npy(path):
             cell = np.array(structure.get_cell())
             forces = np.zeros((natoms, 3))
             symbol = str(structure.symbols)
-            lst = [i, natoms, atomic_numbers, cell, symbol, pos, 1,energy,  material_id]
+            lst = [i, natoms, atomic_numbers, cell, symbol, pos,energy, forces, material_id]
             dataset = np.vstack((dataset, np.array(lst, dtype=object)))
             if i%5000==0:
                 print(i, flush = True)
@@ -197,4 +207,97 @@ def wbm_to_npy(path):
     np.save(write, dataset)
     print('Done', flush = True)
 
-    
+
+class Read_traj:
+
+  def __init__(self, _file, step = -1):
+    self.file = _file
+    self.traj = T(_file)
+    self.step = step
+
+  def traj_length(self):
+      return len(self.traj)
+
+  def name(self):
+    name =  self.file.replace('opt_', '').replace('.traj', '')
+    print(name)
+    return name
+
+  def natoms(self):
+    natoms = len(self.position())
+    return natoms
+
+  def energy(self): # eV
+    energy = self.traj[self.step].get_total_energy()
+  #   energy  = ! grep '!' $self.file | tail -1
+  #   energy = float(energy[0].split('=')[-1].replace(' Ry', ''))
+    return energy
+
+  def force(self): # eV/ A
+    force = self.traj[self.step].get_forces()
+  #   d = ! grep -A 6 'Forces acting on atoms ' $self.file | tail -$(($self.natoms + 2))
+  #   d = d[1:-1]
+  #   force = np.array([[float(num) for num in  i.split('=')[-1].split(' ') if num != ''] for i in d])
+    return force
+
+  def position(self): # A
+    position = self.traj[self.step].get_positions()
+    return position
+
+  def atomic_numbers(self):
+    atomic_numbers = self.traj[self.step].get_atomic_numbers()
+    return atomic_numbers
+
+  def cell(self): # A
+    cell = np.array(self.traj[self.step].get_cell())
+    return cell
+
+  def Chemical_composition(self):
+    Chemical_composition = self.traj[self.step].symbols
+    return Chemical_composition
+
+
+################################## from traj to json
+class traj_to_json:
+  def __init__(self, pos, lattice, atomic_numbers, natoms, E, forces, key, pos_unit = 'cartesian', length_unit= 'angstrom'):
+    self.pos = pos.tolist()
+    self.lattice = lattice.tolist()
+    self.atomic_numbers = atomic_numbers.tolist()
+    self.natoms = natoms
+    self.E = E
+    self.forces = forces.tolist()
+    self.key = key
+    self.pos_unit = pos_unit
+    self.length_unit = length_unit
+
+  def build_atoms(self):
+    atoms = []
+    labels = list(range(self.natoms))
+    system_atomic_symbols = [ptable[int(atom)] for atom in self.atomic_numbers]
+    for idx, (atom, pos, force) in enumerate(zip(system_atomic_symbols, self.pos, self.forces)):
+      species = atom
+      atoms.append([labels[idx],species, pos, force])
+
+    return atoms
+
+  def dump_json(self):
+    json_dict = {}
+    json_dict["key"] = self.key
+    json_dict["atomic_position_unit"] = self.pos_unit
+    json_dict["unit_of_length"] = self.length_unit
+    json_dict["energy"] = [self.E, "eV"]
+    json_dict["lattice_vectors"] = self.lattice
+    json_dict["atoms"] = self.build_atoms()
+
+    with open(f'{self.key}.example', 'w') as json_file:
+         json.dump(json_dict, json_file)
+         print('Done')
+
+
+def read_pwo():
+     energy  = ! grep '!' $self.file | tail -1
+     energy = float(energy[0].split('=')[-1].replace(' Ry', ''))
+     d = ! grep -A 6 'Forces acting on atoms ' $self.file | tail -$(($self.natoms + 2))
+     d = d[1:-1]
+     force = np.array([[float(num) for num in  i.split('=')[-1].split(' ') if num != ''] for i in d])
+

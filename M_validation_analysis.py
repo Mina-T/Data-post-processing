@@ -1,9 +1,11 @@
 import pandas as pd
 import os
+import glob
+from pathlib import Path
 import pickle
 import matplotlib.pyplot as plt
 import numpy as np
-from M_dataframe import read_metrics
+from M_dataframe import read_metrics, read_dat
 
 
 class check_validation:
@@ -35,6 +37,14 @@ class check_validation:
         print(f'MAE of force on each atom is {(Err_tot / (len(self.df)*3))}')
         return Err_tot / (len(self.df)*3)
         
+    def F_RMSE(self):
+        sum_comp = sum((self.df['fx_nn'] - self.df['fx_ref'])**2 + (self.df['fy_nn'] - self.df['fy_ref'])**2  + (self.df['fz_nn'] - self.df['fz_ref'])**2 )
+        avg = (sum_comp / (3 * len(self.df)))
+        rmse =  (avg)**0.5
+        print(rmse)
+        return rmse
+     
+
     def E_MAE(self, EwT=0.02):
         ids_e = {}
         EFwT = 0
@@ -93,145 +103,70 @@ class check_validation:
         print(f'out of {tot} systems with more than one configuration, hierarchy is conserved in {c} of them, NOT in {n} systems')
         return c
 
-class replicas_error:
-    def __init__(self, dirs, label):
-        self.dirs = dirs
-        self.label = label
-
-    def get_replicas_TV_err(self):
-        '''
-        returns [{epoch: {MAE/at:err}} * replicas]
-        '''
-        TV_err = []
-        c = 0
-        for replica in self.dirs:
-            errs = {}
-            df = read_metrics(replica)
-            for idx, epoch  in df.iterrows():
-                if idx not in errs.keys():
-                   errs[idx] = {}
-                errs[idx]['MAE/at'] = epoch['MAE/at']
-                errs[idx]['VMAE/at'] = epoch['VMAE/at'] 
-                errs[idx]['MAEF'] = epoch['MAEF']
-                errs[idx]['VMAEF'] = epoch['VMAEF']
-            TV_err.append(errs)
-        return TV_err
-
-    def avg_model(self):
-        '''
-        returns avg = {epoch: {MAE/at:avg_err}}
-        '''
-        TV_errors = self.get_replicas_TV_err()  # [{epoch: {MAE/at:err}} * replicas]
-        avg = {}
-        n_replicas = len(TV_errors)
-        epochs = min([replica.keys() for replica in TV_errors])
-        print('min epochs: ', epochs)
-        for epoch in range(epochs):
-            avg[epoch] = {}
-            MAE_at, MAEF, VMAE_at, VMAEF = 0,0,0,0
-            for replica in TV_errors:
-                MAE_at += replica[epoch]['MAE/at']
-                MAEF += replica[epoch]['MAEF']
-                VMAE_at += replica[epoch]['VMAE/at']
-                VMAEF += replica[epoch]['VMAEF']
-            avg[epoch]['MAE/at'], avg[epoch]['MAEF'], avg[epoch]['VMAE/at'],  avg[epoch]['VMAEF'] = MAE_at/n_replicas, MAEF/n_replicas , VMAE_at/n_replicas, VMAEF/n_replicas
-            
-        return avg
-
-    def get_noise(self):
-        '''
-        returns noise = {replica :{epoch :{'MAE/at' : noise}}}
-        '''
-        noise = {}
-        avg = self.avg_model() # {epoch: {MAE/at:avg_err}}
-        TV_errors = self.get_replicas_TV_err()# [{epoch: {MAE/at:err}} * replicas]
-        replica_c = 0
-        for replica in TV_errors:
-            noise[replica_c] = {}
-            for epoch in avg.keys():
-                noise[replica_c][epoch] = {}
-                noise[replica_c][epoch]['MAE/at'] = replica[epoch]['MAE/at'] - avg[epoch]['MAE/at']
-                noise[replica_c][epoch]['VMAE/at'] = replica[epoch]['VMAE/at'] - avg[epoch]['VMAE/at']
-                noise[replica_c][epoch]['MAEF'] = replica[epoch]['MAEF'] - avg[epoch]['MAEF']
-                noise[replica_c][epoch]['VMAEF'] = replica[epoch]['VMAEF'] - avg[epoch]['VMAEF']
-            replica_c+=1
-        return noise
-
-    def config_bias(self, epochs:list, path:str):
-        '''
-        Returns {row_Id:[b1,..,bn]}
-        '''
-        biases = {}
-        for epoch in epochs:
-            biases[epoch] = {}
-            for model in self.dirs:
-                os.chdir(path + str(model))
-                print('checking ', os.getcwd())
-                df = pd.read_csv(f'epoch_{epoch}_step_{1000*epoch}.dat', delim_whitespace = True)
-                for idx, row in df.iterrows():
-                    if row['#filename'] not in biases[epoch].keys():
-                            biases[epoch][row['#filename']] = []
-                    biases[epoch][row['#filename']].append(row['e_nn']- row['e_ref']) 
-        avg_bias = {}
-        for Id in biases.keys():
-                avg_bias[Id] = {}
-                for epoch in biases[Id].keys():
-                    avg_bias[Id][epoch] = sum(biases[Id][epoch])/len(biases[Id][epoch])
-        return biases, avg_bias
-
-
-    def config_variance(self, biases, avg_bias):
-        '''
-        Returns a dict of systems id and their variance
-        '''
-        V_dict = {}
-        for epoch in biases.keys(): 
-            V_dict[epoch] = {}
-            for Id in biases[epoch].keys():
-                avg = avg_bias[Id][epoch]
-                diffs = []
-                for err in biases[epoch][Id]:
-                    diffs.append((err - avg)**2)
-                var = sum(diffs)/ len(diffs)   
-                V_dict[epoch][Id] = var
-        return V_dict
-
-
-def bias(df):
-    #df = pd.read_csv(_file, delim_whitespace = True)
-    err = (df['e_ref']/df['n_atoms']) - (df['e_nn']/df['n_atoms'])
-    bias = sum(err)/len(err)
-    print(f'bias is {bias} per atom')
-    return bias
-
-def variance(df):
-    #df = pd.read_csv(_file, delim_whitespace = True)
-    err = df['e_ref'] - df['e_nn']
-    avg = sum(err)/len(err)
-    diff = (err - avg)**2
-    var = sum(diff)/len(diff)
-    return var
-
-def MAE(df):
+def E_MAE(df):
     mae = abs((df['e_ref']/df['n_atoms']) - (df['e_nn']/df['n_atoms']))
     mae = sum(mae)/len(mae)
-    print(f'MAE is {mae} per atom')
     return mae
 
-# def read_mace_validation():
-# mace_energies = []
-# p = '/leonardo_scratch/large/userexternal/mtaleblo/MACE/validation/3BPA/'
-# f = open(p+'output.xyz', 'r')
-# idx = 0
-# while True:
-#     try:
-#         structure = list(extxyz.read_xyz(f, index = idx, properties_parser = extxyz.key_val_str_to_dict))
-#         mace_energies.append([idx, len(structure[0].get_atomic_numbers()),structure[0].info['energy'] , structure[0].info['MACE_energy']])
-#         idx += 1
-#         if idx %1000 == 0 :
-#             print(idx)
-#     except:
-#         print('Done')
-#         break
-# mace_energies = np.array(mace_energies)
-# np.save(open(p+'mace_energies.npy', 'wb'), mace_energies)
+def F_MAE(df):
+        Ex = abs(df['fx_nn'] - df['fx_ref'])
+        Ey = abs(df['fy_nn'] - df['fy_ref'])
+        Ez = abs(df['fz_nn'] - df['fz_ref'])
+        Err_tot = sum(Ex + Ey + Ez)
+        mae = Err_tot /(len(df)*3)
+        return mae
+
+
+def RMSE_E(df):
+    diff = (df['e_ref'] - df['e_nn'])**2
+    avg = sum(diff)/(len(diff)*sum(df['n_atoms']))
+    rmse = avg**0.5
+    print('RMSE is ',rmse, ' per atom')
+    return rmse
+
+
+           
+class Read_validation:
+    def __init__(self, _path, dirs, sub_dirs):
+        self._path = _path
+        self.dirs = dirs
+        self.sub_dirs = sub_dirs
+
+
+
+
+
+class Read_domains_validation:
+    def __init__(self, _path, dirs, sub_dirs, epoch):
+        self._path = _path
+        self.dirs = dirs
+        self.sub_dirs = sub_dirs
+        self.epoch = epoch
+
+    def get_error(self):
+        model_validation = {_dir:{'E_MAE':[], 'F_MAE':[]} for _dir in self.dirs}
+        for _dir in self.dirs:
+            for s_dir in self.sub_dirs:
+                try:
+                    print(_dir, s_dir, flush = True)
+                    p = os.path.join(self._path, _dir, s_dir, 'val/')
+                    os.chdir(p)
+                    energy_file = glob.glob(f"epoch_{self.epoch}_step_{self.epoch*1000}.dat")
+                    energy_file = read_dat(p, energy_file[0])
+                    e_MAE = E_MAE(energy_file)
+                    model_validation[_dir]['E_MAE'].append(e_MAE)
+                    force_file = glob.glob(f"epoch_{self.epoch}_step_{self.epoch*1000}_forces.dat")
+                    force_file = read_dat(p, force_file[0])
+                    f_MAE = F_MAE(force_file)
+                    model_validation[_dir]['F_MAE'].append(f_MAE)
+                    print(f'MAE_E: {e_MAE}, MAE_F: {f_MAE}', flush = True)
+                except:
+                    print('file not found', flush = True)
+                    continue
+            if model_validation[_dir]['E_MAE']:
+                model_validation[_dir]['E_MAE'] = sum(model_validation[_dir]['E_MAE'])/len(model_validation[_dir]['E_MAE'])
+            if model_validation[_dir]['F_MAE']:
+                model_validation[_dir]['F_MAE'] = sum(model_validation[_dir]['F_MAE'])/len(model_validation[_dir]['F_MAE'])
+        print(model_validation, flush = True)
+        return model_validation
+
